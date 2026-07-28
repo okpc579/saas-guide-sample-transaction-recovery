@@ -1,0 +1,1 @@
+package com.example.transactionrecovery.repository; import com.example.transactionrecovery.domain.Saga; import org.springframework.data.jpa.repository.JpaRepository; import java.util.*; public interface SagaRepository extends JpaRepository<Saga,UUID>{Optional<Saga> findByIdAndTenantId(UUID id,String tenantId);}

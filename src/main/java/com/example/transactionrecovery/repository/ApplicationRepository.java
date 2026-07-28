@@ -1,0 +1,1 @@
+package com.example.transactionrecovery.repository; import com.example.transactionrecovery.domain.ServiceApplication; import org.springframework.data.jpa.repository.JpaRepository; import java.util.*; public interface ApplicationRepository extends JpaRepository<ServiceApplication,UUID>{Optional<ServiceApplication> findByIdAndTenantId(UUID id,String tenantId);}
