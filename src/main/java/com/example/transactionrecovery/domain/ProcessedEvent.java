@@ -1,0 +1,3 @@
+package com.example.transactionrecovery.domain;
+import jakarta.persistence.*; import java.time.Instant; import java.util.UUID;
+@Entity @Table(name="processed_event",uniqueConstraints=@UniqueConstraint(name="uk_consumer_event",columnNames={"consumer_name","event_id"})) public class ProcessedEvent { @Id @GeneratedValue(strategy=GenerationType.IDENTITY) public Long id; @Column(nullable=false) public String consumerName; @Column(nullable=false) public UUID eventId; @Column(nullable=false) public String tenantId; @Column(nullable=false) public Instant processedAt=Instant.now(); protected ProcessedEvent(){} public ProcessedEvent(String c,UUID e,String t){consumerName=c;eventId=e;tenantId=t;} }

@@ -1,0 +1,1 @@
+package com.example.transactionrecovery.repository; import com.example.transactionrecovery.domain.ProcessedEvent; import org.springframework.data.jpa.repository.JpaRepository; import java.util.UUID; public interface ProcessedEventRepository extends JpaRepository<ProcessedEvent,Long>{boolean existsByConsumerNameAndEventId(String consumerName,UUID eventId);}
