@@ -1,3 +1,29 @@
 package com.example.transactionrecovery.service;
-import com.example.transactionrecovery.domain.OutboxEvent; import com.example.transactionrecovery.repository.OutboxRepository; import org.springframework.stereotype.Service; import org.springframework.transaction.annotation.Transactional; import static com.example.transactionrecovery.domain.States.OutboxStatus;
-@Service public class OutboxPublisher {private final OutboxRepository repo;private final InMemoryEventBroker broker;public OutboxPublisher(OutboxRepository r,InMemoryEventBroker b){repo=r;broker=b;} @Transactional public int publishPending(){int count=0;for(OutboxEvent e:repo.findByStatusOrderByOccurredAt(PENDING)){e.publishAttempts++;try{broker.send(e);e.status=PUBLISHED;count++;}catch(RuntimeException failure){e.status=FAILED;}}return count;}}
+
+import com.example.transactionrecovery.domain.OutboxEvent;
+import com.example.transactionrecovery.repository.OutboxRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class OutboxPublisher {
+    private final OutboxRepository outbox;
+    private final DemoEventDelivery delivery;
+
+    public OutboxPublisher(OutboxRepository outbox, DemoEventDelivery delivery) {
+        this.outbox = outbox;
+        this.delivery = delivery;
+    }
+
+    @Transactional
+    public int publishPending(String tenantId) {
+        int published = 0;
+        for (OutboxEvent event : outbox.findByTenantIdAndStatusOrderByOccurredAt(
+                tenantId, OutboxEvent.Status.PENDING)) {
+            delivery.send(event);
+            event.status = OutboxEvent.Status.PUBLISHED;
+            published++;
+        }
+        return published;
+    }
+}

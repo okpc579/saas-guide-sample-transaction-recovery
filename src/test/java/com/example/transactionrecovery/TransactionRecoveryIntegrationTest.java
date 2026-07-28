@@ -1,11 +1,102 @@
 package com.example.transactionrecovery;
-import com.example.transactionrecovery.domain.*; import com.example.transactionrecovery.repository.*; import com.example.transactionrecovery.service.*; import org.junit.jupiter.api.*; import org.springframework.beans.factory.annotation.Autowired; import org.springframework.boot.test.context.SpringBootTest; import org.springframework.test.context.ActiveProfiles; import java.util.*; import static org.assertj.core.api.Assertions.*; import static com.example.transactionrecovery.domain.States.*;
-@SpringBootTest @ActiveProfiles("test") class TransactionRecoveryIntegrationTest {@Autowired ApplicationCommandService commands;@Autowired OutboxPublisher publisher;@Autowired EventDeliveryService delivery;@Autowired SagaConsumer consumer;@Autowired ApplicationRepository apps;@Autowired SagaRepository sagas;@Autowired OutboxRepository outbox;@Autowired ProcessedEventRepository processed;
- @BeforeEach void clean(){processed.deleteAll();outbox.deleteAll();sagas.deleteAll();apps.deleteAll();}
- @Test void localTransactionCreatesApplicationSagaAndPendingOutbox(){var c=commands.start("tenant-a",new ApplicationCommandService.StartRequest("BASIC",false,0));assertThat(apps.findById(c.applicationId())).isPresent();assertThat(sagas.findById(c.sagaId()).orElseThrow().status).isEqualTo(SagaStatus.STARTED);assertThat(outbox.findById(c.eventId()).orElseThrow().status).isEqualTo(OutboxStatus.PENDING);}
- @Test void publishingAndConsumptionAreSeparatedAndDuplicateIsIgnored(){var c=commands.start("tenant-a",new ApplicationCommandService.StartRequest("BASIC",false,0));assertThat(publisher.publishPending()).isOne();assertThat(outbox.findById(c.eventId()).orElseThrow().status).isEqualTo(OutboxStatus.PUBLISHED);assertThat(sagas.findById(c.sagaId()).orElseThrow().status).isEqualTo(SagaStatus.STARTED);assertThat(delivery.consumeAvailable()).isOne();assertThat(sagas.findById(c.sagaId()).orElseThrow().status).isEqualTo(SagaStatus.COMPLETED);assertThat(consumer.consume(outbox.findById(c.eventId()).orElseThrow())).isFalse();assertThat(processed.count()).isOne();}
- @Test void businessFailureIsCompensated(){var c=commands.start("tenant-a",new ApplicationCommandService.StartRequest("BASIC",true,1));publisher.publishPending();delivery.consumeAvailable();Saga s=sagas.findById(c.sagaId()).orElseThrow();assertThat(s.status).isEqualTo(SagaStatus.COMPENSATED);assertThat(s.compensationAttempts).isEqualTo(2);assertThat(apps.findById(c.applicationId()).orElseThrow().status).isEqualTo(ApplicationStatus.CANCELLED);}
- @Test void exhaustedCompensationRequiresManualRecovery(){var c=commands.start("tenant-a",new ApplicationCommandService.StartRequest("BASIC",true,3));publisher.publishPending();delivery.consumeAvailable();assertThat(sagas.findById(c.sagaId()).orElseThrow().status).isEqualTo(SagaStatus.MANUAL_REQUIRED);}
- @Test void invalidTransitionIsBlocked(){Saga s=new Saga(UUID.randomUUID(),UUID.randomUUID(),"tenant-a");assertThatThrownBy(()->s.transition(SagaStatus.COMPLETED)).isInstanceOf(IllegalStateException.class);}
- @Test void tenantScopedLookupDoesNotRevealOtherTenant(){var c=commands.start("tenant-a",new ApplicationCommandService.StartRequest("BASIC",false,0));assertThat(sagas.findByIdAndTenantId(c.sagaId(),"tenant-b")).isEmpty();}
+
+import com.example.transactionrecovery.domain.*;
+import com.example.transactionrecovery.repository.*;
+import com.example.transactionrecovery.service.*;
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
+import java.util.UUID;
+import static org.assertj.core.api.Assertions.*;
+
+@SpringBootTest
+@ActiveProfiles("test")
+class TransactionRecoveryIntegrationTest {
+    @Autowired ApplicationCommandService commands;
+    @Autowired OutboxPublisher publisher;
+    @Autowired DemoEventDelivery delivery;
+    @Autowired SagaEventProcessor processor;
+    @Autowired ApplicationRepository applications;
+    @Autowired SagaRepository sagas;
+    @Autowired OutboxRepository outbox;
+    @Autowired ProcessedEventRepository processed;
+
+    @BeforeEach
+    void clean() {
+        processed.deleteAll();
+        outbox.deleteAll();
+        sagas.deleteAll();
+        applications.deleteAll();
+    }
+
+    @Test
+    void applicationSagaAndPendingOutboxAreCreatedTogetherWithStableEventId() {
+        var created = start("tenant-a", ApplicationCommandService.DemoScenario.SUCCESS);
+        assertThat(applications.findById(created.applicationId())).isPresent();
+        assertThat(sagas.findById(created.sagaId()).orElseThrow().status).isEqualTo(Saga.Status.STARTED);
+        assertThat(outbox.findById(created.eventId()).orElseThrow().status).isEqualTo(OutboxEvent.Status.PENDING);
+
+        publisher.publishPending("tenant-a");
+        OutboxEvent published = outbox.findById(created.eventId()).orElseThrow();
+        assertThat(published.id).isEqualTo(created.eventId());
+        assertThat(published.status).isEqualTo(OutboxEvent.Status.PUBLISHED);
+    }
+
+    @Test
+    void publishedDoesNotMeanConsumedAndDuplicateEventIsIgnored() {
+        var created = start("tenant-a", ApplicationCommandService.DemoScenario.SUCCESS);
+        assertThat(publisher.publishPending("tenant-a")).isOne();
+        assertThat(sagas.findById(created.sagaId()).orElseThrow().status).isEqualTo(Saga.Status.STARTED);
+        assertThat(delivery.consumeAvailable("tenant-a")).isOne();
+        assertThat(sagas.findById(created.sagaId()).orElseThrow().status).isEqualTo(Saga.Status.COMPLETED);
+        assertThat(processor.process(outbox.findById(created.eventId()).orElseThrow())).isFalse();
+        assertThat(processed.count()).isOne();
+    }
+
+    @Test
+    void activationFailureIsCompensatedByCancellingAllocatedApplication() {
+        var created = start("tenant-a", ApplicationCommandService.DemoScenario.COMPENSATION);
+        publisher.publishPending("tenant-a");
+        delivery.consumeAvailable("tenant-a");
+        Saga saga = sagas.findById(created.sagaId()).orElseThrow();
+        assertThat(saga.status).isEqualTo(Saga.Status.COMPENSATED);
+        assertThat(saga.compensationAttempts).isOne();
+        assertThat(applications.findById(created.applicationId()).orElseThrow().status)
+                .isEqualTo(ServiceApplication.Status.CANCELLED);
+    }
+
+    @Test
+    void exhaustedCompensationMovesToManualRecovery() {
+        var created = start("tenant-a", ApplicationCommandService.DemoScenario.MANUAL_REQUIRED);
+        publisher.publishPending("tenant-a");
+        delivery.consumeAvailable("tenant-a");
+        Saga saga = sagas.findById(created.sagaId()).orElseThrow();
+        assertThat(saga.status).isEqualTo(Saga.Status.MANUAL_REQUIRED);
+        assertThat(saga.compensationAttempts).isEqualTo(3);
+    }
+
+    @Test
+    void outboxPublishingAndConsumptionAreTenantScoped() {
+        var tenantA = start("tenant-a", ApplicationCommandService.DemoScenario.SUCCESS);
+        var tenantB = start("tenant-b", ApplicationCommandService.DemoScenario.SUCCESS);
+        assertThat(publisher.publishPending("tenant-a")).isOne();
+        assertThat(outbox.findById(tenantB.eventId()).orElseThrow().status).isEqualTo(OutboxEvent.Status.PENDING);
+        assertThat(delivery.consumeAvailable("tenant-b")).isZero();
+        delivery.consumeAvailable("tenant-a");
+        assertThat(sagas.findById(tenantA.sagaId()).orElseThrow().status).isEqualTo(Saga.Status.COMPLETED);
+        assertThat(sagas.findByIdAndTenantId(tenantA.sagaId(), "tenant-b")).isEmpty();
+    }
+
+    @Test
+    void invalidTransitionIsBlocked() {
+        Saga saga = new Saga(UUID.randomUUID(), UUID.randomUUID(), "tenant-a");
+        assertThatThrownBy(() -> saga.transition(Saga.Status.COMPLETED))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    private ApplicationCommandService.Created start(String tenantId,
+                                                     ApplicationCommandService.DemoScenario scenario) {
+        return commands.start(tenantId, new ApplicationCommandService.StartRequest("BASIC", scenario));
+    }
 }
