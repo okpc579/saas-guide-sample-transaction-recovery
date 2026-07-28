@@ -1,6 +1,48 @@
 package com.example.transactionrecovery.service;
-import com.example.transactionrecovery.domain.*; import com.example.transactionrecovery.repository.*; import com.fasterxml.jackson.databind.ObjectMapper; import org.springframework.stereotype.Service; import org.springframework.transaction.annotation.Transactional; import java.util.*;
-@Service public class ApplicationCommandService {private final ApplicationRepository applications;private final SagaRepository sagas;private final OutboxRepository outbox;private final ObjectMapper json; public ApplicationCommandService(ApplicationRepository a,SagaRepository s,OutboxRepository o,ObjectMapper j){applications=a;sagas=s;outbox=o;json=j;}
- public record Created(UUID applicationId,UUID sagaId,UUID eventId,String status){} public record StartRequest(String planCode,boolean activationShouldFail,int compensationFailures){}
- @Transactional public Created start(String tenant,StartRequest request){UUID appId=UUID.randomUUID(),sagaId=UUID.randomUUID(),eventId=UUID.randomUUID();applications.save(new ServiceApplication(appId,tenant,request.planCode(),request.activationShouldFail(),request.compensationFailures()));sagas.save(new Saga(sagaId,appId,tenant));try{outbox.save(new OutboxEvent(eventId,tenant,"SERVICE_APPLICATION_CREATED",json.writeValueAsString(Map.of("applicationId",appId,"sagaId",sagaId))));}catch(Exception e){throw new IllegalStateException("Outbox serialization/storage failed",e);}return new Created(appId,sagaId,eventId,"STARTED");}
+
+import com.example.transactionrecovery.domain.*;
+import com.example.transactionrecovery.repository.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import java.util.*;
+
+@Service
+public class ApplicationCommandService {
+    public enum DemoScenario { SUCCESS, COMPENSATION, MANUAL_REQUIRED }
+    public record StartRequest(String planCode, DemoScenario scenario) {}
+    public record Created(UUID applicationId, UUID sagaId, UUID eventId, String status) {}
+
+    private final ApplicationRepository applications;
+    private final SagaRepository sagas;
+    private final OutboxRepository outbox;
+    private final ObjectMapper json;
+
+    public ApplicationCommandService(ApplicationRepository applications, SagaRepository sagas,
+                                     OutboxRepository outbox, ObjectMapper json) {
+        this.applications = applications;
+        this.sagas = sagas;
+        this.outbox = outbox;
+        this.json = json;
+    }
+
+    @Transactional
+    public Created start(String tenantId, StartRequest request) {
+        Objects.requireNonNull(request.scenario(), "scenario is required (demo-only)");
+        UUID applicationId = UUID.randomUUID();
+        UUID sagaId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        applications.save(new ServiceApplication(applicationId, tenantId, request.planCode()));
+        sagas.save(new Saga(sagaId, applicationId, tenantId));
+        try {
+            String payload = json.writeValueAsString(Map.of(
+                    "applicationId", applicationId,
+                    "sagaId", sagaId,
+                    "scenario", request.scenario()));
+            outbox.save(new OutboxEvent(eventId, tenantId, "SERVICE_APPLICATION_CREATED", payload));
+        } catch (Exception failure) {
+            throw new IllegalStateException("Outbox serialization/storage failed", failure);
+        }
+        return new Created(applicationId, sagaId, eventId, Saga.Status.STARTED.name());
+    }
 }
