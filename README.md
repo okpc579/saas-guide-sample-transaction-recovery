@@ -28,7 +28,7 @@ TX D: 활성화 완료 또는 COMPENSATING 전환
 TX E: 각 보상 시도; 성공하면 COMPENSATED, 3회 소진하면 MANUAL_REQUIRED
 ```
 
-Outbox Event ID는 최초 생성 후 바뀌지 않는다. `PUBLISHED`는 데모 전송 큐에 발행됐다는 뜻일 뿐 소비 완료를 뜻하지 않는다. 소비자는 별도 로컬 트랜잭션에서 업무 변경과 `processed_event`를 함께 저장한다. `(consumer_name,event_id)` UNIQUE 제약은 동시 중복 처리의 최종 방어선이다.
+Outbox Event ID는 최초 생성 후 바뀌지 않는다. `PUBLISHED`는 데모 전송 큐에 발행됐다는 뜻일 뿐 소비 완료를 뜻하지 않는다. TX C의 `processed_event`는 최초 신청 생성 이벤트의 **자원 할당 단계가 한 번 적용되었음을 나타내는 멱등 처리 이력**이며, 전체 Saga가 완료됐다는 의미는 아니다. 후속 Saga 단계는 `RESOURCE_ALLOCATED` 또는 `COMPENSATING` 상태를 기준으로 재전달 시 재개할 수 있다. `(consumer_name,event_id)` UNIQUE 제약은 동시 중복 처리의 최종 방어선이다.
 
 모든 Saga/Application/Outbox 처리와 수동 API는 `X-Tenant-Id` 범위로 제한된다.
 
@@ -76,7 +76,10 @@ publish와 consume 요청은 의도적으로 분리되어 발행 성공과 소�
 - 신청/Saga/Outbox 동일 트랜잭션과 고정 Event ID
 - Outbox 저장 실패 시 전체 로컬 롤백
 - PUBLISHED와 소비 완료 분리
-- 동일 Event ID 중복 소비 무시
+- 동일 Event ID 중복 소비 시 terminal 상태는 무시하고 중단된 후속 단계는 재개
+- `RESOURCE_ALLOCATED`, `COMPENSATING` 중단 상태에서 재전달 복구 및 기존 보상 횟수 유지
+- processor 예외 시 demo queue 이벤트 유지, 성공 시 제거
+- `processed_event`와 `STARTED`가 함께 존재하는 모순 상태 오류
 - DB UNIQUE 최종 방어
 - 허용되지 않은 Saga 전이 차단
 - 소비 이력 저장 실패 시 소비 트랜잭션의 업무 변경 롤백
@@ -89,8 +92,8 @@ publish와 consume 요청은 의도적으로 분리되어 발행 성공과 소�
 
 Kafka/RabbitMQ, 2PC, exactly-once, 운영용 Outbox Scheduler, 다중 인스턴스 분산 락, 범용 Retry/DLQ API, 지수 backoff/jitter, 운영자 복구 UI, 인증·소속 검증 전체, RLS, 운영 모니터링·감사 체계는 구현하지 않는다.
 
-`DemoEventDelivery`는 단일 프로세스의 휘발성 큐다. 프로세스 종료 시 이벤트가 유실되며 실제 broker나 durable delivery를 대체하지 않는다.
+`DemoEventDelivery`는 processor가 정상 반환한 뒤에만 이벤트를 제거하는 단일 프로세스 교육용 전달 구조다. 예상하지 않은 예외가 나면 이벤트를 큐에 남기고 호출자에게 전파한다. 이는 실제 broker의 durable delivery, ack/nack, redelivery를 구현하거나 대체하지 않는다. 프로세스 자체가 종료되면 인메모리 Queue의 이벤트는 유실된다.
 
 ## 9. 운영 적용 시 추가 고려사항
 
-운영 적용에는 durable broker, Outbox claim/lease 및 다중 인스턴스 동시성 제어, 재발행 정책, optimistic locking, 계약 버전 관리, 인증된 tenant context, Secret Manager, 관측·감사 로그, 보존 정책, 운영자 승인 복구 절차가 추가로 필요하다. 이 예제는 메시지 전달과 DB 상태 변경 사이의 exactly-once 원자성을 주장하지 않는다.
+운영 적용에는 durable broker, Outbox claim/lease 및 다중 인스턴스 동시성 제어, Scheduler와 재발행 정책, optimistic locking, 계약 버전 관리, 인증된 tenant context, Secret Manager, 관측·감사 로그, 보존 정책, 운영자 승인 복구 절차가 추가로 필요하다. 다중 인스턴스 동시성, claim/lease, Scheduler는 이 예제의 제외 범위이며, 메시지 전달과 DB 상태 변경 사이의 exactly-once 원자성을 주장하지 않는다.

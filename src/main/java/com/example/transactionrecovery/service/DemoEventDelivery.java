@@ -20,22 +20,24 @@ public class DemoEventDelivery {
 
     public int consumeAvailable(String tenantId) {
         int consumed = 0;
-        for (OutboxEvent event = poll(tenantId); event != null; event = poll(tenantId)) {
+        for (OutboxEvent event = next(tenantId); event != null; event = next(tenantId)) {
             processor.process(event);
+            remove(event);
             consumed++;
         }
         return consumed;
     }
 
-    private synchronized OutboxEvent poll(String tenantId) {
-        Iterator<OutboxEvent> events = queue.iterator();
-        while (events.hasNext()) {
-            OutboxEvent event = events.next();
+    private synchronized OutboxEvent next(String tenantId) {
+        for (OutboxEvent event : queue) {
             if (event.tenantId.equals(tenantId)) {
-                events.remove();
                 return event;
             }
         }
         return null;
+    }
+
+    private synchronized void remove(OutboxEvent event) {
+        queue.remove(event);
     }
 }
